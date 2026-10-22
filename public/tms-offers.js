@@ -72,7 +72,12 @@
             let statusText = "Cần kiểm tra thêm";
             let statusClass = "tms-offer-warning";
 
-            if (status === "minimum_met") {
+
+            if (offer.appliedInCart) {
+                statusText = "Đã áp dụng vào giỏ hàng";
+                statusClass = "tms-offer-success";
+
+            } else if (status === "minimum_met") {
                 statusText = offer.requiresCoupon
                     ? "Đạt mức mua · Cần mã"
                     : "Đạt mức mua";
@@ -123,7 +128,15 @@
             const details = document.createElement("div");
             details.className = "tms-offer-details";
 
-            if (status === "minimum_not_met") {
+
+            if (offer.appliedInCart) {
+                addText(
+                    details,
+                    "p",
+                    "Odoo đang ghi nhận phần thưởng của chương trình này trong giỏ hàng."
+                );
+
+            } else if (status === "minimum_not_met") {
                 if (offer.missingAmount > 0) {
                     addText(
                         details,
@@ -234,11 +247,25 @@
             throw new Error("Invalid cart data");
         }
 
+
+        const appliedProgramIds = Array.from(
+            root.querySelectorAll(
+                "#shop_cart.tms-cart " +
+                "#tms-applied-offers .tms-applied-offer"
+            )
+        ).map(element =>
+            Number(element.dataset.programId)
+        ).filter(Number.isSafeInteger);
+
+
+
         return {
             cartAmount,
             cartQuantity,
-            items
+            items,
+            appliedProgramIds
         };
+
     }
 
     async function fetchCurrentCart() {
@@ -315,10 +342,20 @@
 
             lastCartSignature = signature;
 
-            renderOffers(
-                Array.isArray(data.offers) ? data.offers : [],
-                container
+
+            const appliedIds = new Set(
+                cart.appliedProgramIds || []
             );
+
+            const offers = (
+                Array.isArray(data.offers) ? data.offers : []
+            ).map(offer => ({
+                ...offer,
+                appliedInCart: appliedIds.has(offer.id)
+            }));
+
+            renderOffers(offers, container);
+
 
         } catch (error) {
             if (version !== refreshVersion) return;
