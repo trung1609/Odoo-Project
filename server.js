@@ -293,10 +293,24 @@ app.listen(PORT, () => {
 
 const path = require("node:path");
 
+
 app.use(
   "/assets",
   express.static(path.join(__dirname, "public"), {
     maxAge: "5m",
-    immutable: false
+    immutable: false,
+    setHeaders: (res, filePath) => {
+      if (filePath.endsWith("tms-offers.js")) {
+        res.setHeader(
+          "Cross-Origin-Resource-Policy",
+          "cross-origin"
+        );
+        res.setHeader(
+          "Access-Control-Allow-Origin",
+          "https://tmsport.odoo.com"
+        );
+      }
+    }
   })
 );
+
