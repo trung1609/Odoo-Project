@@ -61,6 +61,7 @@ async function odooSearchRead(model, domain, fields) {
   return response.json();
 }
 
+
 app.get("/api/public-offers", async (req, res) => {
   try {
     res.set("Cache-Control", "public, max-age=60");
@@ -69,30 +70,87 @@ app.get("/api/public-offers", async (req, res) => {
       return res.json({ offers: [] });
     }
 
-    const programs = await odooSearchRead(
-      "loyalty.program",
-      [
-        ["id", "in", publicIds],
-        ["active", "=", true]
-      ],
-      ["id", "name", "program_type"]
-    );
+    const [programs, rules, rewards] = await Promise.all([
+      odooSearchRead(
+        "loyalty.program",
+        [
+          ["id", "in", publicIds],
+          ["active", "=", true]
+        ],
+        ["id", "name", "program_type"]
+      ),
 
-    const offers = programs.map(program => ({
-      id: program.id,
-      name: program.name,
-      type: program.program_type,
-      status: "details_pending"
-    }));
+      odooSearchRead(
+        "loyalty.rule",
+        [["program_id", "in", publicIds]],
+        [
+          "id",
+          "program_id",
+          "minimum_qty",
+          "minimum_amount",
+          "product_ids",
+          "product_category_id"
+        ]
+      ),
+
+      odooSearchRead(
+        "loyalty.reward",
+        [["program_id", "in", publicIds]],
+        [
+          "id",
+          "program_id",
+          "reward_type",
+          "discount",
+          "discount_mode",
+          "discount_applicability",
+          "discount_max_amount"
+        ]
+      )
+    ]);
+
+    const relationId = value =>
+      Array.isArray(value) ? value[0] : null;
+
+    const offers = programs.map(program => {
+      const programRules = rules.filter(
+        rule => relationId(rule.program_id) === program.id
+      );
+
+      const programRewards = rewards.filter(
+        reward => relationId(reward.program_id) === program.id
+      );
+
+      return {
+        id: program.id,
+        name: program.name,
+        type: program.program_type,
+        rules: programRules.map(rule => ({
+          minimum_qty: rule.minimum_qty,
+          minimum_amount: rule.minimum_amount,
+          product_ids: rule.product_ids,
+          product_category_id: rule.product_category_id
+        })),
+        rewards: programRewards.map(reward => ({
+          type: reward.reward_type,
+          discount: reward.discount,
+          mode: reward.discount_mode,
+          applies_to: reward.discount_applicability,
+          max_discount: reward.discount_max_amount
+        })),
+        status: "conditions_not_evaluated"
+      };
+    });
 
     res.json({ offers });
+
   } catch (error) {
-    console.error("Public offers request failed");
+    console.error("Failed to fetch public offers:", error.message);
     res.status(502).json({
       error: "Cannot load promotions right now"
     });
   }
 });
+
 
 app.listen(PORT, () => {
   console.log(`TM Sport API running on port ${PORT}`);
