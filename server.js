@@ -19,10 +19,22 @@ if (!ODOO_URL || !ODOO_API_KEY || !ALLOWED_ORIGIN) {
     throw new Error("Missing environment configuration");
 }
 
-const publicIds = (process.env.PUBLIC_PROGRAM_IDS || "")
-    .split(",")
-    .map(Number)
-    .filter(Number.isSafeInteger);
+
+const PUBLIC_PROGRAM_TYPES = [
+    "promo_code",
+    "promotion"
+];
+
+async function getPublicPrograms() {
+    return await odooSearchRead(
+        "loyalty.program",
+        [
+            ["active", "=", true],
+            ["program_type", "in", PUBLIC_PROGRAM_TYPES]
+        ],
+        ["id", "name", "program_type"]
+    );
+}
 
 app.use(helmet());
 app.use(cors({ origin: ALLOWED_ORIGIN }));
@@ -171,18 +183,18 @@ app.post("/api/offers/preview", async (req, res) => {
             return res.json({ offers: [] });
         }
 
-        const [programs, rules, rewards] = await Promise.all([
-            odooSearchRead(
-                "loyalty.program",
-                [
-                    ["id", "in", publicIds],
-                    ["active", "=", true]
-                ],
-                ["id", "name", "program_type"]
-            ),
+        const programs = await getPublicPrograms();
+
+        const programIds = programs.map(program => program.id);
+
+        if (!programIds.length) {
+            return res.json({ offers: [] });
+        }
+
+        const [rules, rewards] = await Promise.all([
             odooSearchRead(
                 "loyalty.rule",
-                [["program_id", "in", publicIds]],
+                [["program_id", "in", programIds]],
                 [
                     "id",
                     "program_id",
@@ -194,7 +206,7 @@ app.post("/api/offers/preview", async (req, res) => {
             ),
             odooSearchRead(
                 "loyalty.reward",
-                [["program_id", "in", publicIds]],
+                [["program_id", "in", programIds]],
                 [
                     "id",
                     "program_id",
@@ -295,22 +307,22 @@ const path = require("node:path");
 
 
 app.use(
-  "/assets",
-  express.static(path.join(__dirname, "public"), {
-    maxAge: "5m",
-    immutable: false,
-    setHeaders: (res, filePath) => {
-      if (filePath.endsWith("tms-offers.js")) {
-        res.setHeader(
-          "Cross-Origin-Resource-Policy",
-          "cross-origin"
-        );
-        res.setHeader(
-          "Access-Control-Allow-Origin",
-          "https://tmsport.odoo.com"
-        );
-      }
-    }
-  })
+    "/assets",
+    express.static(path.join(__dirname, "public"), {
+        maxAge: "5m",
+        immutable: false,
+        setHeaders: (res, filePath) => {
+            if (filePath.endsWith("tms-offers.js")) {
+                res.setHeader(
+                    "Cross-Origin-Resource-Policy",
+                    "cross-origin"
+                );
+                res.setHeader(
+                    "Access-Control-Allow-Origin",
+                    "https://tmsport.odoo.com"
+                );
+            }
+        }
+    })
 );
 
