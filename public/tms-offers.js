@@ -30,75 +30,68 @@
         return el;
     }
 
+
     function renderOffers(offers, container) {
         container.replaceChildren();
 
-        if (!offers.length) {
-            addText(container, "p", "Chưa có ưu đãi công khai.");
+        if (!Array.isArray(offers) || !offers.length) {
+            addText(
+                container,
+                "p",
+                "Hiện chưa có ưu đãi công khai."
+            );
             return;
         }
 
+        const count = addText(
+            container,
+            "p",
+            `${offers.length} chương trình ưu đãi`,
+            "tms-offers-count"
+        );
+
         for (const offer of offers) {
-            const card = document.createElement("div");
+            const card = document.createElement("details");
             card.className = "tms-offer-card";
 
-            addText(card, "strong", offer.name);
+            const summary = document.createElement("summary");
+            summary.className = "tms-offer-summary";
 
-            if (offer.status === "next_order_offer") {
-                addText(
-                    card,
-                    "p",
-                    "Ưu đãi dành cho đơn hàng tiếp theo",
-                    "tms-offer-warning"
-                );
+            const info = document.createElement("div");
+            info.className = "tms-offer-info";
 
-                addText(
-                    card,
-                    "p",
-                    "Đơn hàng đạt điều kiện có thể giúp bạn nhận phiếu cho lần mua tiếp theo.",
-                    "tms-offer-desc"
-                );
+            addText(
+                info,
+                "strong",
+                offer.name,
+                "tms-offer-name"
+            );
 
-            } else if (offer.status === "minimum_met") {
-                addText(
-                    card,
-                    "p",
-                    offer.requiresCoupon
-                        ? "Đạt mức mua tối thiểu · Cần mã hợp lệ"
-                        : "Đã đạt mức mua tối thiểu",
-                    "tms-offer-success"
-                );
+            const status = offer.status;
 
-            } else if (offer.status === "minimum_not_met") {
-                const messages = [];
+            let statusText = "Cần kiểm tra thêm";
+            let statusClass = "tms-offer-warning";
 
-                if (offer.missingAmount > 0) {
-                    messages.push(
-                        `Mua thêm ${money(offer.missingAmount)}`
-                    );
-                }
+            if (status === "minimum_met") {
+                statusText = offer.requiresCoupon
+                    ? "Đạt mức mua · Cần mã"
+                    : "Đạt mức mua";
 
-                if (offer.missingQuantity > 0) {
-                    messages.push(
-                        `Thêm ${offer.missingQuantity} sản phẩm`
-                    );
-                }
+                statusClass = "tms-offer-success";
 
-                addText(
-                    card,
-                    "p",
-                    messages.join(" · ") || "Chưa đạt điều kiện",
-                    "tms-offer-warning"
-                );
+            } else if (status === "minimum_not_met") {
+                statusText = "Chưa đạt mức mua";
 
-            } else {
-                addText(
-                    card,
-                    "p",
-                    "Cần kiểm tra thêm điều kiện sản phẩm hoặc coupon",
-                    "tms-offer-warning"
-                );
+            } else if (status === "next_order_offer") {
+                statusText = "Ưu đãi lần sau";
             }
+
+            addText(
+                info,
+                "span",
+                statusText,
+                `tms-offer-status ${statusClass}`
+            );
 
             const discount = (offer.rewards || []).find(
                 reward =>
@@ -108,9 +101,9 @@
 
             if (discount) {
                 addText(
-                    card,
+                    info,
                     "p",
-                    `Ưu đãi ${discount.discount}%` +
+                    `Giảm ${discount.discount}%` +
                     (discount.maxDiscount
                         ? ` · Tối đa ${money(discount.maxDiscount)}`
                         : ""),
@@ -118,15 +111,80 @@
                 );
             }
 
+            summary.appendChild(info);
+
+            const arrow = document.createElement("span");
+            arrow.className = "tms-offer-arrow";
+            arrow.textContent = "⌄";
+            arrow.setAttribute("aria-hidden", "true");
+            summary.appendChild(arrow);
+
+            card.appendChild(summary);
+
+            const details = document.createElement("div");
+            details.className = "tms-offer-details";
+
+            if (status === "minimum_not_met") {
+                if (offer.missingAmount > 0) {
+                    addText(
+                        details,
+                        "p",
+                        `Cần mua thêm ${money(offer.missingAmount)}`
+                    );
+                }
+
+                if (offer.missingQuantity > 0) {
+                    addText(
+                        details,
+                        "p",
+                        `Cần thêm ${offer.missingQuantity} sản phẩm`
+                    );
+                }
+
+            } else if (status === "next_order_offer") {
+                addText(
+                    details,
+                    "p",
+                    "Đơn hàng đủ điều kiện có thể giúp bạn nhận phiếu cho lần mua tiếp theo."
+                );
+
+            } else if (status === "minimum_met") {
+                addText(
+                    details,
+                    "p",
+                    offer.requiresCoupon
+                        ? "Đã đạt điều kiện mua hàng sơ bộ. Bạn vẫn cần mã hoặc phiếu giảm giá hợp lệ."
+                        : "Đã đạt điều kiện mua hàng sơ bộ."
+                );
+
+            } else {
+                addText(
+                    details,
+                    "p",
+                    "Cần kiểm tra thêm sản phẩm, danh mục hoặc quyền sử dụng coupon."
+                );
+            }
+
+            if (Number.isFinite(offer.minimumAmount)) {
+                addText(
+                    details,
+                    "p",
+                    `Giá trị tối thiểu: ${money(offer.minimumAmount)}`,
+                    "tms-offer-condition"
+                );
+            }
+
             addText(
-                card,
+                details,
                 "small",
-                "Thông tin tham khảo; Odoo xác nhận khi áp dụng mã."
+                "Kết quả tham khảo. Odoo xác nhận khi áp dụng mã."
             );
 
+            card.appendChild(details);
             container.appendChild(card);
         }
     }
+
 
     function readCart(root) {
         const section = root.querySelector(
