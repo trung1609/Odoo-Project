@@ -132,6 +132,21 @@
 
         if (!container) return;
 
+        const items = Array.from(
+            document.querySelectorAll(
+                "#shop_cart.tms-cart #tms-cart-items .tms-cart-item"
+            )
+        ).map(element => ({
+            productId: Number(element.dataset.productId),
+            quantity: Number(element.dataset.quantity),
+            subtotalInclTax: Number(
+                element.dataset.subtotalInclTax
+            ),
+            subtotalExclTax: Number(
+                element.dataset.subtotalExclTax
+            )
+        }));
+
         const cartAmount = Number(section.dataset.cartAmount);
         const cartQuantity = Number(
             section.dataset.cartQuantity
@@ -156,10 +171,13 @@
                 headers: {
                     "Content-Type": "application/json"
                 },
+
                 body: JSON.stringify({
                     cartAmount,
-                    cartQuantity
+                    cartQuantity,
+                    items
                 })
+
             });
 
             if (!response.ok) {

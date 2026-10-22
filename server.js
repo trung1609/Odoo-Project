@@ -162,14 +162,18 @@ async function getPromotionData() {
         odooSearchRead(
             "loyalty.rule",
             [["program_id", "in", programIds]],
+
             [
                 "id",
                 "program_id",
                 "minimum_qty",
                 "minimum_amount",
+                "minimum_amount_tax_mode",
                 "product_ids",
-                "product_category_id"
+                "product_category_id",
+                "product_tag_id"
             ]
+
         ),
 
         odooSearchRead(
@@ -292,27 +296,97 @@ app.get("/api/public-offers", async (req, res) => {
     }
 });
 
+
+function validItems(items) {
+    return Array.isArray(items) &&
+        items.length <= 100 &&
+        items.every(item =>
+            Number.isSafeInteger(item.productId) &&
+            item.productId > 0 &&
+            Number.isFinite(item.quantity) &&
+            item.quantity > 0 &&
+            Number.isFinite(item.subtotalInclTax) &&
+            item.subtotalInclTax >= 0 &&
+            Number.isFinite(item.subtotalExclTax) &&
+            item.subtotalExclTax >= 0
+        );
+}
+
+async function getCartProducts(items) {
+    const ids = [...new Set(
+        items.map(item => item.productId)
+    )];
+
+    if (!ids.length) return [];
+
+    return odooSearchRead(
+        "product.product",
+        [["id", "in", ids]],
+        ["id", "categ_id"]
+    );
+}
+
+async function getCategoryPaths(products) {
+    const categoryIds = [
+        ...new Set(
+            products
+                .map(p => relationId(p.categ_id))
+                .filter(id => id !== null)
+        )
+    ];
+
+    if (!categoryIds.length) return [];
+
+    return odooSearchRead(
+        "product.category",
+        [["id", "in", categoryIds]],
+        ["id", "parent_path"]
+    );
+}
+
+function matchesCategory(
+    productCategoryId,
+    requiredCategoryId,
+    categories
+) {
+    const category = categories.find(
+        c => c.id === productCategoryId
+    );
+
+    if (!category) return false;
+
+    const ancestors = String(category.parent_path || "")
+        .split("/")
+        .filter(Boolean)
+        .map(Number);
+
+    return ancestors.includes(requiredCategoryId);
+}
+
+
 // ==========================================
 // 9. API KIEM TRA DIEU KIEN GIO HANG
 // POST /api/offers/preview
 // ==========================================
 
+
 app.post("/api/offers/preview", async (req, res) => {
     try {
         const {
             cartAmount,
-            cartQuantity
+            cartQuantity,
+            items
         } = req.body || {};
 
-        // Kiem tra du lieu dau vao
         if (
             !Number.isFinite(cartAmount) ||
-            !Number.isSafeInteger(cartQuantity) ||
             cartAmount < 0 ||
-            cartQuantity < 0
+            !Number.isSafeInteger(cartQuantity) ||
+            cartQuantity < 0 ||
+            !validItems(items)
         ) {
             return res.status(400).json({
-                error: "Invalid cart amount or quantity"
+                error: "Invalid cart preview data"
             });
         }
 
@@ -323,6 +397,17 @@ app.post("/api/offers/preview", async (req, res) => {
             rules,
             rewards
         } = await getPromotionData();
+
+        // Lay danh muc thuc te tu Odoo
+        const products = await getCartProducts(items);
+        const categories = await getCategoryPaths(products);
+
+        const productMap = new Map(
+            products.map(product => [
+                product.id,
+                product
+            ])
+        );
 
         const offers = programs.map(program => {
             const programRules = getRulesForProgram(
@@ -335,82 +420,140 @@ app.post("/api/offers/preview", async (req, res) => {
                 program.id
             );
 
-            // Chi uoc tinh cac rule don gian
-            // khong gioi han san pham/danh muc
-            const simpleRules = programRules.filter(rule =>
-                !rule.product_ids?.length &&
-                !rule.product_category_id
-            );
-
-            const needsMoreChecks =
-                programRules.length !== 1 ||
-                simpleRules.length !== 1;
-
-            const rule = simpleRules[0];
-
-            const minimumAmount =
-                rule?.minimum_amount ?? 0;
-
-            const minimumQuantity =
-                rule?.minimum_qty ?? 0;
-
-            const missingAmount = Math.max(
-                0,
-                minimumAmount - cartAmount
-            );
-
-            const missingQuantity = Math.max(
-                0,
-                minimumQuantity - cartQuantity
-            );
-
-            const meetsSimpleMinimum =
-                !needsMoreChecks &&
-                missingAmount === 0 &&
-                missingQuantity === 0;
-
-
-            let status;
-
             const requiresCoupon = [
                 "promo_code",
                 "coupons",
                 "next_order_coupons"
             ].includes(program.program_type);
 
-            if (program.program_type === "next_order_coupons") {
-                status = "next_order_offer";
-            } else if (needsMoreChecks) {
-                status = "requires_additional_checks";
-            } else if (meetsSimpleMinimum) {
-                status = "minimum_met";
-            } else {
-                status = "minimum_not_met";
+            // Chua tu dong danh gia chuong trinh
+            // co nhieu rule hoac chua co rule
+            if (programRules.length !== 1) {
+                return {
+                    id: program.id,
+                    name: program.name,
+                    type: program.program_type,
+                    requiresCoupon,
+                    rewards: formatRewards(programRewards),
+                    status: "requires_additional_checks",
+                    eligibilityVerified: false
+                };
             }
 
+            const rule = programRules[0];
+
+            const requiredCategoryId =
+                relationId(rule.product_category_id);
+
+            const allowedProductIds =
+                Array.isArray(rule.product_ids)
+                    ? rule.product_ids
+                    : [];
+
+            const hasCategory = requiredCategoryId !== null;
+            const hasProducts = allowedProductIds.length > 0;
+            const hasTags = Boolean(rule.product_tag_id);
+
+            const minimumAmount = Number(
+                rule.minimum_amount || 0
+            );
+
+            const minimumQuantity = Number(
+                rule.minimum_qty || 0
+            );
+
+            const taxMode = rule.minimum_amount_tax_mode;
+
+            // Neu quy tac su dung tag hoac dong thoi
+            // nhieu kieu loc, chua tu ket luan
+            const unsupportedRule =
+                hasTags || (hasCategory && hasProducts);
+
+            let qualifiedAmount = 0;
+            let qualifiedQuantity = 0;
+
+            // Xem truoc theo tung dong san pham
+            for (const item of items) {
+                const product = productMap.get(item.productId);
+
+                if (!product) continue;
+
+                const productCategoryId =
+                    relationId(product.categ_id);
+
+                let matches = true;
+
+                if (hasCategory) {
+                    matches = matchesCategory(
+                        productCategoryId,
+                        requiredCategoryId,
+                        categories
+                    );
+                } else if (hasProducts) {
+                    matches = allowedProductIds.includes(
+                        item.productId
+                    );
+                }
+
+                if (!matches) continue;
+
+                qualifiedQuantity += item.quantity;
+
+                qualifiedAmount += taxMode === "excl"
+                    ? item.subtotalExclTax
+                    : item.subtotalInclTax;
+            }
+
+            const missingAmount = Math.max(
+                0,
+                minimumAmount - qualifiedAmount
+            );
+
+            const missingQuantity = Math.max(
+                0,
+                minimumQuantity - qualifiedQuantity
+            );
+
+            let status;
+
+            if (unsupportedRule || !items.length) {
+                status = "requires_additional_checks";
+            } else if (
+                missingAmount > 0 ||
+                missingQuantity > 0
+            ) {
+                status = "minimum_not_met";
+            } else {
+                status = "minimum_met";
+            }
+
+            // Phieu cho don hang tiep theo:
+            // dieu kien nay dung de nhan phieu,
+            // khong phai xac nhan su dung ngay
+            if (
+                program.program_type === "next_order_coupons" &&
+                status === "minimum_met"
+            ) {
+                status = "next_order_offer";
+            }
 
             return {
                 id: program.id,
                 name: program.name,
                 type: program.program_type,
-
+                requiresCoupon,
                 minimumAmount,
                 minimumQuantity,
-
+                qualifiedAmount,
+                qualifiedQuantity,
                 missingAmount,
                 missingQuantity,
-
-                rewards: formatRewards(
-                    programRewards
-                ),
-
+                requiredCategoryId,
+                rewards: formatRewards(programRewards),
                 status,
-
-                disclaimer:
-                    "Estimate only; Odoo must validate the coupon.",
-                requiresCoupon,
-
                 eligibilityVerified: false,
+                disclaimer:
+                    "Preview only. Odoo validates coupon usage."
             };
         });
 
@@ -427,6 +570,7 @@ app.post("/api/offers/preview", async (req, res) => {
         });
     }
 });
+
 
 // ==========================================
 // 10. HEALTH CHECK
