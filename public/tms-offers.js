@@ -36,11 +36,29 @@
 
             const status = offer.status;
 
-            if (status === "minimum_met") {
+
+            if (status === "next_order_offer") {
                 addText(
                     card,
                     "p",
-                    "Đã đạt mức mua tối thiểu",
+                    "Ưu đãi dành cho đơn hàng tiếp theo",
+                    "tms-offer-warning"
+                );
+
+                addText(
+                    card,
+                    "p",
+                    "Đơn hàng đạt điều kiện có thể giúp bạn nhận phiếu giảm giá cho lần mua tiếp theo. Phiếu cần được Odoo phát hành.",
+                    "tms-offer-desc"
+                );
+
+            } else if (status === "minimum_met") {
+                addText(
+                    card,
+                    "p",
+                    offer.requiresCoupon
+                        ? "Đạt mức mua tối thiểu · Cần mã hợp lệ"
+                        : "Đã đạt mức mua tối thiểu",
                     "tms-offer-success"
                 );
             } else if (status === "minimum_not_met") {

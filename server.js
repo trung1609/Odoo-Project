@@ -24,12 +24,13 @@ if (!ODOO_URL || !ODOO_API_KEY || !ALLOWED_ORIGIN) {
     throw new Error("Missing environment configuration");
 }
 
-// Chi tu dong lay cac loai chuong trinh
-// duoc phep gioi thieu cong khai
 const PUBLIC_PROGRAM_TYPES = [
     "promo_code",
-    "promotion"
+    "promotion",
+    "coupons",
+    "next_order_coupons"
 ];
+
 
 // ==========================================
 // 2. MIDDLEWARE
@@ -267,6 +268,10 @@ app.get("/api/public-offers", async (req, res) => {
                         rule.product_category_id
                 })),
 
+                requiresCoupon,
+
+                eligibilityVerified: false,
+
                 rewards: formatRewards(programRewards),
 
                 status: "conditions_not_evaluated"
@@ -364,15 +369,25 @@ app.post("/api/offers/preview", async (req, res) => {
                 missingAmount === 0 &&
                 missingQuantity === 0;
 
+
             let status;
 
-            if (needsMoreChecks) {
+            const requiresCoupon = [
+                "promo_code",
+                "coupons",
+                "next_order_coupons"
+            ].includes(program.program_type);
+
+            if (program.program_type === "next_order_coupons") {
+                status = "next_order_offer";
+            } else if (needsMoreChecks) {
                 status = "requires_additional_checks";
             } else if (meetsSimpleMinimum) {
                 status = "minimum_met";
             } else {
                 status = "minimum_not_met";
             }
+
 
             return {
                 id: program.id,
@@ -392,7 +407,10 @@ app.post("/api/offers/preview", async (req, res) => {
                 status,
 
                 disclaimer:
-                    "Estimate only; Odoo must validate the coupon."
+                    "Estimate only; Odoo must validate the coupon.",
+                requiresCoupon,
+
+                eligibilityVerified: false,
             };
         });
 
