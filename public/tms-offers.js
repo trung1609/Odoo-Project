@@ -115,7 +115,6 @@
 
             const arrow = document.createElement("span");
             arrow.className = "tms-offer-arrow";
-            arrow.textContent = "⌄";
             arrow.setAttribute("aria-hidden", "true");
             summary.appendChild(arrow);
 
