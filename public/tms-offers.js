@@ -77,6 +77,10 @@
                 statusText = "Đã áp dụng vào giỏ hàng";
                 statusClass = "tms-offer-success";
 
+            } else if (offer.usedUpVerified === true) {
+                statusText = "Đã sử dụng";
+                statusClass = "tms-offer-used";
+                card.classList.add("tms-offer-card--used");
             } else if (status === "minimum_met") {
                 statusText = offer.requiresCoupon
                     ? "Đạt mức mua · Cần mã"
@@ -134,6 +138,13 @@
                     details,
                     "p",
                     "Odoo đang ghi nhận phần thưởng của chương trình này trong giỏ hàng."
+                );
+
+            } else if (offer.usedUpVerified === true) {
+                addText(
+                    details,
+                    "p",
+                    "Mã giảm giá này đã hết lượt sử dụng."
                 );
 
             } else if (status === "minimum_not_met") {
