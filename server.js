@@ -6,7 +6,6 @@ const cors = require("cors");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 const path = require("node:path");
-const crypto = require("node:crypto");
 
 const app = express();
 
@@ -16,18 +15,14 @@ const {
     PORT = 3000,
     ODOO_URL,
     ODOO_API_KEY,
-    ALLOWED_ORIGIN,
-    AUTH_SECRET,
-    BREVO_API_KEY,
-    BREVO_SENDER_EMAIL,
-    BREVO_SENDER_NAME = "TM Sport"
+    ALLOWED_ORIGIN
 } = process.env;
 
 // ==========================================
 // 1. KIEM TRA CAU HINH
 // ==========================================
 
-if (!ODOO_URL || !ODOO_API_KEY || !ALLOWED_ORIGIN || !AUTH_SECRET || AUTH_SECRET.length < 32 || !BREVO_API_KEY || !BREVO_SENDER_EMAIL) {
+if (!ODOO_URL || !ODOO_API_KEY || !ALLOWED_ORIGIN) {
     throw new Error("Missing environment configuration");
 }
 
@@ -637,169 +632,6 @@ app.post("/api/offers/preview", async (req, res) => {
     }
 });
 
-
-// ==========================================
-// 10. PORTAL EMAIL VERIFICATION
-// A verified email is mapped to ONE portal partner.
-// Never accept userId or partnerId from the browser.
-// ==========================================
-const authPending = new Map(); // Single Render instance; resets on restart.
-const authCooldown = new Map();
-const MAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const OTP_LIFETIME_MS = 10 * 60 * 1000;
-const ACCESS_LIFETIME_MS = 24 * 60 * 60 * 1000;
-// Gui OTP qua Brevo HTTPS API, khong su dung SMTP (Render Free).
-async function sendOtpEmail(to, code) {
-    const response = await fetch("https://api.brevo.com/v3/smtp/email", {
-        method: "POST",
-        headers: {
-            "api-key": BREVO_API_KEY,
-            "Content-Type": "application/json",
-            "Accept": "application/json"
-        },
-        body: JSON.stringify({
-            sender: {
-                name: BREVO_SENDER_NAME,
-                email: BREVO_SENDER_EMAIL
-            },
-            to: [{ email: to }],
-            subject: "TM Sport - Ma xac minh uu dai",
-            textContent: `Ma xac minh uu dai TM Sport: ${code}. Hieu luc 10 phut. Neu khong yeu cau, hay bo qua email nay.`
-        }),
-        signal: AbortSignal.timeout(10000)
-    });
-
-    if (!response.ok) {
-        // Chi log HTTP status; khong log ma OTP, API key hoac email.
-        throw new Error(`Brevo API HTTP ${response.status}`);
-    }
-    return response.json();
-}
-
-function normalizeEmail(raw) {
-    const email = String(raw || "").trim().toLowerCase();
-    return email.length <= 254 && MAIL_RE.test(email) ? email : null;
-}
-function digest(value) {
-    return crypto.createHmac("sha256", AUTH_SECRET).update(String(value)).digest("hex");
-}
-function safeEqualHex(left, right) {
-    return typeof left === "string" && typeof right === "string" &&
-        left.length === right.length &&
-        crypto.timingSafeEqual(Buffer.from(left, "hex"), Buffer.from(right, "hex"));
-}
-function signToken(partnerId) {
-    const payload = Buffer.from(JSON.stringify({
-        pid: partnerId,
-        exp: Date.now() + ACCESS_LIFETIME_MS,
-        nonce: crypto.randomBytes(12).toString("hex")
-    })).toString("base64url");
-    const signature = crypto.createHmac("sha256", AUTH_SECRET)
-        .update(payload).digest("base64url");
-    return `${payload}.${signature}`;
-}
-function verifyToken(token) {
-    if (typeof token !== "string" || token.length > 1024) return null;
-    const [payload, signature, more] = token.split(".");
-    if (!payload || !signature || more !== undefined) return null;
-    const expected = crypto.createHmac("sha256", AUTH_SECRET)
-        .update(payload).digest("base64url");
-    if (signature.length !== expected.length ||
-        !crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return null;
-    try {
-        const obj = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
-        return Number.isSafeInteger(obj.pid) && obj.pid > 0 &&
-            Number.isFinite(obj.exp) && obj.exp > Date.now() ? obj.pid : null;
-    } catch { return null; }
-}
-
-// Only accept an unambiguous email belonging to a portal account.
-async function portalPartnerForEmail(email) {
-    const partners = await odooSearchRead("res.partner", [["email", "=ilike", email]],
-        ["id", "email"]);
-    const exact = partners.filter(p => normalizeEmail(p.email) === email);
-    if (exact.length !== 1) return null;
-    const users = await odooSearchRead("res.users", [
-        ["partner_id", "=", exact[0].id], ["share", "=", true], ["active", "=", true]
-    ], ["id", "partner_id", "share"]);
-    return users.length === 1 ? exact[0].id : null;
-}
-
-const otpLimit = rateLimit({
-    windowMs: 15 * 60 * 1000, limit: 5,
-    standardHeaders: "draft-7", legacyHeaders: false
-});
-const verifyLimit = rateLimit({
-    windowMs: 15 * 60 * 1000, limit: 12,
-    standardHeaders: "draft-7", legacyHeaders: false
-});
-
-app.post("/api/auth/request-code", otpLimit, async (req, res) => {
-    res.set("Cache-Control", "no-store");
-    const email = normalizeEmail(req.body?.email);
-    if (!email) return res.status(400).json({ error: "Email không hợp lệ" });
-    const key = digest(`mail:${email}`);
-    const generic = { message: "Nếu email thuộc tài khoản Portal, mã xác minh sẽ được gửi." };
-    if ((authCooldown.get(key) || 0) > Date.now()) return res.json(generic);
-    authCooldown.set(key, Date.now() + 60 * 1000);
-    try {
-        const partnerId = await portalPartnerForEmail(email);
-        if (!partnerId) return res.json(generic);
-        const otp = String(crypto.randomInt(0, 1000000)).padStart(6, "0");
-        authPending.set(key, {
-            codeHash: digest(`${key}:${otp}`), partnerId,
-            expires: Date.now() + OTP_LIFETIME_MS, attempts: 0
-        });
-        await sendOtpEmail(email, otp);
-        return res.json(generic);
-    } catch (err) {
-        authPending.delete(key);
-        console.error("OTP dispatch failed:", err.message);
-        return res.status(503).json({ error: "Chưa gửi được email, vui lòng thử lại sau." });
-    }
-});
-
-app.post("/api/auth/verify-code", verifyLimit, (req, res) => {
-    res.set("Cache-Control", "no-store");
-    const email = normalizeEmail(req.body?.email);
-    const code = String(req.body?.code || "").trim();
-    if (!email || !/^\d{6}$/.test(code))
-        return res.status(400).json({ error: "Thông tin xác minh không hợp lệ" });
-    const key = digest(`mail:${email}`);
-    const pending = authPending.get(key);
-    if (!pending || pending.expires <= Date.now() || pending.attempts >= 5) {
-        authPending.delete(key);
-        return res.status(401).json({ error: "Mã đã hết hạn hoặc không hợp lệ" });
-    }
-    pending.attempts++;
-    if (!safeEqualHex(digest(`${key}:${code}`), pending.codeHash)) {
-        if (pending.attempts >= 5) authPending.delete(key);
-        return res.status(401).json({ error: "Mã không hợp lệ" });
-    }
-    authPending.delete(key);
-    return res.json({ token: signToken(pending.partnerId), expiresIn: 86400 });
-});
-
-app.get("/api/offers/customer-usage", async (req, res) => {
-    res.set("Cache-Control", "no-store");
-    const bearer = /^Bearer (.+)$/i.exec(req.get("Authorization") || "");
-    const partnerId = verifyToken(bearer?.[1]);
-    if (!partnerId) return res.status(401).json({ error: "Yêu cầu xác minh lại email" });
-    try {
-        const programs = await odooSearchRead("loyalty.program", [
-            ["id", "=", 2], ["active", "=", true], ["once_per_user", "=", true]
-        ], ["id", "once_per_user", "partner_ids"]);
-        return res.json({
-            customerUsageVerified: true,
-            usedProgramIds: programs.filter(p =>
-                Array.isArray(p.partner_ids) && p.partner_ids.includes(partnerId)
-            ).map(p => p.id)
-        });
-    } catch (error) {
-        console.error("Customer usage failed:", error.message);
-        return res.status(502).json({ error: "Không kiểm tra được lịch sử ưu đãi" });
-    }
-});
 
 // ==========================================
 // 10. HEALTH CHECK
