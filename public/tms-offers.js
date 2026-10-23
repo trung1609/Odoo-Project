@@ -6,6 +6,8 @@
         "https://odoo-project-ayy3.onrender.com/api/offers/preview";
 
     const CART_URL = "/shop/cart";
+    const AUTH_BASE = "https://odoo-project-ayy3.onrender.com";
+    const AUTH_KEY = "tms_coupon_verified_token_v1";
 
     let refreshTimer = null;
     let refreshVersion = 0;
@@ -83,7 +85,7 @@
                 card.classList.add("tms-offer-card--used");
             } else if (status === "minimum_met") {
                 statusText = offer.requiresCoupon
-                    ? "Đạt mức mua · Cần mã"
+                    ? "Đạt mức mua · Kiểm tra mã khi sử dụng"
                     : "Đạt mức mua";
 
                 statusClass = "tms-offer-success";
@@ -303,6 +305,72 @@
         return readCart(doc);
     }
 
+    function addVerificationUI(section) {
+        if (section.querySelector("#tms-verify-panel")) return;
+        const panel = document.createElement("div");
+        panel.id = "tms-verify-panel";
+        panel.style.cssText = "margin:12px 0;padding:12px;border:1px solid #ddd;border-radius:8px";
+        section.insertBefore(panel, section.querySelector("#tms-offers-list"));
+        const msg = addText(panel, "p", "Xác minh email tài khoản Portal để xem ưu đãi đã sử dụng.");
+        const form = document.createElement("form");
+        const email = document.createElement("input");
+        email.type = "email"; email.required = true; email.placeholder = "Email tài khoản Portal";
+        email.autocomplete = "email"; email.style.marginRight = "8px";
+        const code = document.createElement("input");
+        code.inputMode = "numeric"; code.pattern = "[0-9]{6}";
+        code.maxLength = 6; code.placeholder = "Mã 6 số";
+        code.style.cssText = "width:105px;margin:6px 8px 6px 0";
+        code.hidden = true;
+        const button = document.createElement("button");
+        button.type = "submit"; button.textContent = "Gửi mã xác minh";
+        button.className = "btn btn-outline-primary btn-sm";
+        form.append(email, code, button); panel.append(form);
+        if (sessionStorage.getItem(AUTH_KEY)) {
+            panel.hidden = true;
+        }
+        let requested = false;
+        form.addEventListener("submit", async event => {
+            event.preventDefault(); button.disabled = true;
+            try {
+                if (!requested) {
+                    const response = await fetch(`${AUTH_BASE}/api/auth/request-code`, {
+                        method: "POST", headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ email: email.value.trim() })
+                    });
+                    const data = await response.json();
+                    if (!response.ok) throw new Error(data.error || "Không gửi được mã");
+                    msg.textContent = data.message;
+                    requested = true; code.hidden = false; code.required = true;
+                    button.textContent = "Xác nhận mã";
+                } else {
+                    const response = await fetch(`${AUTH_BASE}/api/auth/verify-code`, {
+                        method: "POST", headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ email: email.value.trim(), code: code.value.trim() })
+                    });
+                    const data = await response.json();
+                    if (!response.ok) throw new Error(data.error || "Mã không đúng");
+                    sessionStorage.setItem(AUTH_KEY, data.token);
+                    panel.hidden = true;
+                    updateOffers(true);
+                }
+            } catch (err) { msg.textContent = err.message; }
+            finally { button.disabled = false; }
+        });
+    }
+    async function fetchCustomerUsage() {
+        const token = sessionStorage.getItem(AUTH_KEY);
+        if (!token) return null;
+        const response = await fetch(`${AUTH_BASE}/api/offers/customer-usage`, {
+            headers: { Authorization: `Bearer ${token}` }, cache: "no-store"
+        });
+        if (response.status === 401) {
+            sessionStorage.removeItem(AUTH_KEY);
+            return null;
+        }
+        if (!response.ok) throw new Error("Không kiểm tra được lịch sử ưu đãi");
+        return response.json();
+    }
+
     async function updateOffers(force = false) {
         const section = document.querySelector(
             "#shop_cart.tms-cart #tms-cart-offers"
@@ -316,6 +384,7 @@
 
         if (!container) return;
 
+        addVerificationUI(section);
         const version = ++refreshVersion;
 
         try {
@@ -348,6 +417,11 @@
             }
 
             const data = await response.json();
+            let customerUsage = null;
+            try { customerUsage = await fetchCustomerUsage(); }
+            catch (err) { console.warn("TM Sport personal usage:", err.message); }
+            const panel = section.querySelector("#tms-verify-panel");
+            if (panel) panel.hidden = Boolean(sessionStorage.getItem(AUTH_KEY));
 
             if (version !== refreshVersion) return;
 
@@ -358,11 +432,13 @@
                 cart.appliedProgramIds || []
             );
 
+            const usedIds = new Set(customerUsage?.usedProgramIds || []);
             const offers = (
                 Array.isArray(data.offers) ? data.offers : []
             ).map(offer => ({
                 ...offer,
-                appliedInCart: appliedIds.has(offer.id)
+                appliedInCart: appliedIds.has(offer.id),
+                usedUpVerified: offer.usedUpVerified === true || usedIds.has(offer.id)
             }));
 
             renderOffers(offers, container);
