@@ -7,9 +7,10 @@ const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 const path = require("node:path");
 const crypto = require("node:crypto");
-const nodemailer = require("nodemailer");
 
 const app = express();
+
+app.set("trust proxy", 1);
 
 const {
     PORT = 3000,
@@ -17,18 +18,16 @@ const {
     ODOO_API_KEY,
     ALLOWED_ORIGIN,
     AUTH_SECRET,
-    SMTP_HOST,
-    SMTP_PORT = "587",
-    SMTP_USER,
-    SMTP_PASS,
-    SMTP_FROM
+    BREVO_API_KEY,
+    BREVO_SENDER_EMAIL,
+    BREVO_SENDER_NAME = "TM Sport"
 } = process.env;
 
 // ==========================================
 // 1. KIEM TRA CAU HINH
 // ==========================================
 
-if (!ODOO_URL || !ODOO_API_KEY || !ALLOWED_ORIGIN || !AUTH_SECRET || AUTH_SECRET.length < 32 || !SMTP_HOST || !SMTP_USER || !SMTP_PASS || !SMTP_FROM) {
+if (!ODOO_URL || !ODOO_API_KEY || !ALLOWED_ORIGIN || !AUTH_SECRET || AUTH_SECRET.length < 32 || !BREVO_API_KEY || !BREVO_SENDER_EMAIL) {
     throw new Error("Missing environment configuration");
 }
 
@@ -649,12 +648,33 @@ const authCooldown = new Map();
 const MAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const OTP_LIFETIME_MS = 10 * 60 * 1000;
 const ACCESS_LIFETIME_MS = 24 * 60 * 60 * 1000;
-const mailer = nodemailer.createTransport({
-    host: SMTP_HOST,
-    port: Number(SMTP_PORT),
-    secure: Number(SMTP_PORT) === 465,
-    auth: { user: SMTP_USER, pass: SMTP_PASS }
-});
+// Gui OTP qua Brevo HTTPS API, khong su dung SMTP (Render Free).
+async function sendOtpEmail(to, code) {
+    const response = await fetch("https://api.brevo.com/v3/smtp/email", {
+        method: "POST",
+        headers: {
+            "api-key": BREVO_API_KEY,
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        },
+        body: JSON.stringify({
+            sender: {
+                name: BREVO_SENDER_NAME,
+                email: BREVO_SENDER_EMAIL
+            },
+            to: [{ email: to }],
+            subject: "TM Sport - Ma xac minh uu dai",
+            textContent: `Ma xac minh uu dai TM Sport: ${code}. Hieu luc 10 phut. Neu khong yeu cau, hay bo qua email nay.`
+        }),
+        signal: AbortSignal.timeout(10000)
+    });
+
+    if (!response.ok) {
+        // Chi log HTTP status; khong log ma OTP, API key hoac email.
+        throw new Error(`Brevo API HTTP ${response.status}`);
+    }
+    return response.json();
+}
 
 function normalizeEmail(raw) {
     const email = String(raw || "").trim().toLowerCase();
@@ -730,13 +750,10 @@ app.post("/api/auth/request-code", otpLimit, async (req, res) => {
             codeHash: digest(`${key}:${otp}`), partnerId,
             expires: Date.now() + OTP_LIFETIME_MS, attempts: 0
         });
-        await mailer.sendMail({
-            from: SMTP_FROM, to: email,
-            subject: "TM Sport - Mã xác minh ưu đãi",
-            text: `Mã xác minh ưu đãi TM Sport: ${otp}. Hiệu lực 10 phút. Nếu không yêu cầu, hãy bỏ qua email này.`
-        });
+        await sendOtpEmail(email, otp);
         return res.json(generic);
     } catch (err) {
+        authPending.delete(key);
         console.error("OTP dispatch failed:", err.message);
         return res.status(503).json({ error: "Chưa gửi được email, vui lòng thử lại sau." });
     }
