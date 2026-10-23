@@ -120,6 +120,7 @@ async function odooSearchRead(model, domain, fields) {
 // 5. TU DONG LAY CHUONG TRINH
 // ==========================================
 
+
 async function getPublicPrograms() {
     return odooSearchRead(
         "loyalty.program",
@@ -134,10 +135,43 @@ async function getPublicPrograms() {
         [
             "id",
             "name",
-            "program_type"
+            "program_type",
+            "once_per_user",
+            "limit_usage",
+            "max_usage",
+            "total_order_count"
         ]
     );
 }
+
+
+
+function getProgramUsageStatus(program) {
+    const hasGlobalLimit =
+        program.limit_usage === true;
+
+    const maxUsage = program.max_usage;
+    const usedCount = program.total_order_count;
+
+    const hasValidCounts =
+        Number.isSafeInteger(maxUsage) &&
+        Number.isSafeInteger(usedCount) &&
+        maxUsage > 0 &&
+        usedCount >= 0;
+
+    const globalLimitReached =
+        hasGlobalLimit &&
+        hasValidCounts &&
+        usedCount >= maxUsage;
+
+    return {
+        globalLimitReached,
+        customerUsageVerified: false,
+        oncePerUser: program.once_per_user === true
+    };
+}
+
+
 
 // ==========================================
 // 6. LAY RULES VA REWARDS
@@ -249,6 +283,14 @@ app.get("/api/public-offers", async (req, res) => {
         } = await getPromotionData();
 
         const offers = programs.map(program => {
+            const usage = getProgramUsageStatus(program);
+
+            const requiresCoupon = [
+                "promo_code",
+                "coupons",
+                "next_order_coupons"
+            ].includes(program.program_type);
+
             const programRules = getRulesForProgram(
                 rules,
                 program.id
@@ -278,7 +320,14 @@ app.get("/api/public-offers", async (req, res) => {
 
                 rewards: formatRewards(programRewards),
 
-                status: "conditions_not_evaluated"
+                status: "conditions_not_evaluated",
+                usedUpVerified: usage.globalLimitReached,
+
+                usageStatus: {
+                    globalLimitReached: usage.globalLimitReached,
+                    customerUsageVerified: usage.customerUsageVerified,
+                    oncePerUser: usage.oncePerUser
+                },
             };
         });
 
@@ -410,6 +459,7 @@ app.post("/api/offers/preview", async (req, res) => {
         );
 
         const offers = programs.map(program => {
+            const usage = getProgramUsageStatus(program);
             const programRules = getRulesForProgram(
                 rules,
                 program.id
@@ -553,7 +603,16 @@ app.post("/api/offers/preview", async (req, res) => {
                 status,
                 eligibilityVerified: false,
                 disclaimer:
-                    "Preview only. Odoo validates coupon usage."
+                    "Preview only. Odoo validates coupon usage.",
+
+                usedUpVerified: usage.globalLimitReached,
+
+                usageStatus: {
+                    globalLimitReached: usage.globalLimitReached,
+                    customerUsageVerified: usage.customerUsageVerified,
+                    oncePerUser: usage.oncePerUser
+                },
+
             };
         });
 
